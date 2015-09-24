@@ -1,9 +1,8 @@
 """
-Syncs Amazon Node API objects with sqlite database
+Syncs Amazon Node API objects with SQLite database.
 """
 
 import logging
-from sqlalchemy.exc import *
 from datetime import datetime, timedelta
 
 try:
@@ -15,122 +14,150 @@ except ImportError:
         def parse(str_: str):
             return datetime.strptime(str_, '%Y-%m-%dT%H:%M:%S.%fZ')
 
-from . import db
+from . import schema
 
 logger = logging.getLogger(__name__)
 
 
-def remove_purged(purged: list):
-    session = db.Session()
-    for p_id in purged:
-        session.query(db.Node).filter_by(id=p_id).delete()
-    session.commit()
-    logger.info('Purged %i nodes.' % len(purged))
+class SyncMixin(object):
+    def remove_purged(self, purged: list):
+        """:param purged: list of purged node ids"""
+        if not purged:
+            return
 
+        conn = self.engine.connect()
+        trans = conn.begin()
 
-def insert_nodes(nodes: list, partial=True):
-    """Inserts mixed list of files and folders into cache."""
-    files = []
-    folders = []
-    for node in nodes:
-        if node['status'] == 'PENDING':
-            continue
-        kind = node['kind']
-        if kind == 'FILE':
-            files.append(node)
-        elif kind == 'FOLDER':
-            folders.append(node)
-        elif kind != 'ASSET':
-            logger.warning('Cannot insert unknown node type "%s".' % kind)
-    insert_folders(folders)
-    insert_files(files)
+        conn.execute(schema.Node.__table__.delete().where(schema.Node.id.in_(purged)))
+        conn.execute(schema.File.__table__.delete().where(schema.File.id.in_(purged)))
+        conn.execute(schema.Folder.__table__.delete().where(schema.Folder.id.in_(purged)))
+        conn.execute(schema._parentage_table.delete()
+                     .where(schema._parentage_table.columns.parent.in_(purged)))
+        conn.execute(schema._parentage_table.delete()
+                     .where(schema._parentage_table.columns.child.in_(purged)))
 
-    insert_parentage(files + folders, partial)
+        conn.execute(schema.Label.__table__.delete().where(schema.Label.id.in_(purged)))
 
+        trans.commit()
+        conn.close()
 
-def insert_node(node: db.Node):
-    """Inserts single file or folder into cache."""
-    if not node:
-        pass
-    insert_nodes([node])
+        logger.info('Purged %i node(s).' % len(purged))
 
+    def insert_nodes(self, nodes: list, partial=True):
+        """Inserts mixed list of files and folders into cache."""
+        files = []
+        folders = []
+        for node in nodes:
+            if node['status'] == 'PENDING':
+                continue
+            kind = node['kind']
+            if kind == 'FILE':
+                files.append(node)
+            elif kind == 'FOLDER':
+                folders.append(node)
+            elif kind != 'ASSET':
+                logger.warning('Cannot insert unknown node type "%s".' % kind)
+        self.insert_folders(folders)
+        self.insert_files(files)
 
-def insert_folders(folders: list):
-    """ Inserts list of folders into cache. Sets 'update' column to current date.
-    :param folders: list of raw dict-type folders
-    """
+        self.insert_parentage(files + folders, partial)
 
-    if not folders:
-        return
+    def insert_node(self, node: schema.Node):
+        """Inserts single file or folder into cache."""
+        if not node:
+            return
+        self.insert_nodes([node])
 
-    session = db.Session()
-    for folder in folders:
-        logger.debug(folder)
+    def insert_folders(self, folders: list):
+        """ Inserts list of folders into cache. Sets 'update' column to current date.
+        :param folders: list of raw dict-type folders
+        """
+        if not folders:
+            return
 
-        # root folder has no name key
-        f_name = folder.get('name')
-        f = db.Folder(folder['id'], f_name,
-                      iso_date.parse(folder['createdDate']),
-                      iso_date.parse(folder['modifiedDate']),
-                      folder['status'])
-        f.updated = datetime.utcnow()
-        session.merge(f)
+        stmt1 = str(schema.Node.__table__.insert())
+        stmt1 = stmt1.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
 
-    try:
-        session.commit()
-    except IntegrityError:
-        logger.warning('Error inserting folders.')
-        session.rollback()
+        stmt2 = str(schema.Folder.__table__.insert())
+        stmt2 = stmt2.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
 
-    logger.info('Inserted/updated %d folders.' % len(folders))
+        conn = self.engine.connect()
+        trans = conn.begin()
 
+        conn.execute(
+            stmt1,
+            [dict(id=f['id'],
+                  type='folder',
+                  name=f.get('name'),
+                  description=f.get('description'),
+                  created=iso_date.parse(f['createdDate']),
+                  modified=iso_date.parse(f['modifiedDate']),
+                  updated=datetime.utcnow(),
+                  status=f['status']
+                  ) for f in folders
+             ]
+        )
+        conn.execute(stmt2, [dict(id=f['id']) for f in folders])
 
-def insert_files(files: list):
-    if not files:
-        return
+        trans.commit()
+        conn.close()
 
-    stmt1 = str(db.Node.__table__.insert())
-    stmt1 = stmt1.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
+        logger.info('Inserted/updated %d folder(s).' % len(folders))
 
-    stmt2 = str(db.File.__table__.insert())
-    stmt2 = stmt2.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
+    def insert_files(self, files: list):
+        if not files:
+            return
 
-    conn = db.engine.connect()
-    trans = conn.begin()
+        stmt1 = str(schema.Node.__table__.insert())
+        stmt1 = stmt1.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
 
-    conn.execute(
-        stmt1,
-        [dict(id=f['id'], type='file', name=f.get('name'), description=f.get('description'),
-              created=iso_date.parse(f['createdDate']),
-              modified=iso_date.parse(f['modifiedDate']),
-              updated=datetime.utcnow(),
-              status=f['status']
-              ) for f in files
-         ]
-    )
-    conn.execute(
-        stmt2,
-        [dict(id=f['id'], md5=f.get('contentProperties', {}).get('md5', 'd41d8cd98f00b204e9800998ecf8427e'),
-              size=f.get('contentProperties', {}).get('size', 0)
-              ) for f in files
-         ]
-    )
+        stmt2 = str(schema.File.__table__.insert())
+        stmt2 = stmt2.replace('INSERT INTO', 'INSERT OR REPLACE INTO')
 
-    trans.commit()
+        conn = self.engine.connect()
+        trans = conn.begin()
 
-    logger.info('Inserted/updated %d file(s).' % len(files))
+        conn.execute(
+            stmt1,
+            [dict(id=f['id'],
+                  type='file',
+                  name=f.get('name'),
+                  description=f.get('description'),
+                  created=iso_date.parse(f['createdDate']),
+                  modified=iso_date.parse(f['modifiedDate']),
+                  updated=datetime.utcnow(),
+                  status=f['status']
+                  ) for f in files
+             ]
+        )
+        conn.execute(
+            stmt2,
+            [dict(id=f['id'],
+                  md5=f.get('contentProperties', {}).get('md5', 'd41d8cd98f00b204e9800998ecf8427e'),
+                  size=f.get('contentProperties', {}).get('size', 0)
+                  ) for f in files
+             ]
+        )
 
+        trans.commit()
+        conn.close()
 
-def insert_parentage(nodes: list, partial=True):
-    conn = db.engine.connect()
-    trans = conn.begin()
+        logger.info('Inserted/updated %d file(s).' % len(files))
 
-    if partial:
-        conn.execute('DELETE FROM parentage WHERE child IN (%s)' %
-                     ', '.join(['"' + n['id'] + '"' for n in nodes]))
-    for n in nodes:
-        for p in n['parents']:
-            conn.execute('INSERT OR IGNORE INTO parentage VALUES (?, ?)', p, n['id'])
-    trans.commit()
+    def insert_parentage(self, nodes: list, partial=True):
+        if not nodes:
+            return
 
-    logger.info('Parented %d nodes.' % len(nodes))
+        conn = self.engine.connect()
+        trans = conn.begin()
+
+        if partial:
+            conn.execute('DELETE FROM parentage WHERE child IN (%s)' %
+                         ', '.join([('"%s"' % n['id']) for n in nodes]))
+        for n in nodes:
+            for p in n['parents']:
+                conn.execute('INSERT OR IGNORE INTO parentage VALUES (?, ?)', p, n['id'])
+        trans.commit()
+        conn.close()
+
+        logger.info('Parented %d node(s).' % len(nodes))

@@ -1,8 +1,10 @@
-__version__ = '0.8.1'
-__all__ = ('account', 'common', 'content', 'metadata', 'trash')
+__version__ = '0.8.5'
 
 """
-================
+*******
+ACD API
+*******
+
 Node JSON Format
 ================
 
@@ -15,6 +17,7 @@ This is the usual node JSON format for a file::
                                  'version': 1},
            'createdBy': '<security-profile-nm>-<user>',
            'createdDate': '2015-01-01T00:00:00.00Z',
+           'description': '',
            'eTagResponse': 'AbCdEfGhI01',
            'id': 'AbCdEfGhIjKlMnOpQr0123',
            'isShared': False,
@@ -32,5 +35,7 @@ The ``modifiedDate`` and ``version`` keys get updated each time the content or m
 ``contentProperties['version']`` gets updated on overwrite.
 
 A folder's JSON looks similar, but it lacks the ``contentProperties`` dictionary.
+
+CAUTION: ACD allows hard links for folders!
 
 """

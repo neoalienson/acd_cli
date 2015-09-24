@@ -8,7 +8,8 @@ def gen_rand_name():
 
 
 def gen_rand_id():
-    return str.join('', (random.choice(string.ascii_letters + string.digits + '-') for _ in range(22)))
+    return str.join('', (random.choice(string.ascii_letters + string.digits + '-_')
+                         for _ in range(22)))
 
 
 def gen_rand_md5():
@@ -28,7 +29,7 @@ def gen_folder(folders: list=None):
         'name': gen_rand_name(),
         'parents': [],
         'restricted': False,
-        'status': random.choice(['TRASH', 'AVAILABLE']),
+        'status': 'AVAILABLE' if not folders else random.choice(['TRASH', 'AVAILABLE']),
         'version': random.randint(1, 20)
     }
     if not folders:

@@ -7,37 +7,12 @@ import webbrowser
 import datetime
 from urllib.parse import urlparse, parse_qs
 
-__all__ = ('init', 'get_auth_header')
-
 logger = logging.getLogger(__name__)
-handler = None
-""":type: OAuthHandler"""
-
-
-def init(path: str='') -> bool:
-    global handler
-    handler = _create_handler(path)
-    return True
-
-
-def get_auth_header() -> dict:
-    return {'Authorization': handler.get_auth_token()}
-
 
 TOKEN_INFO_URL = 'https://api.amazon.com/auth/o2/tokeninfo'
 
 
-def get_access_token_info() -> dict:
-    """json keywords
-    int exp: expiration time in sec
-    str aud: client id
-    user_id, app_id, iat (exp time)
-    """
-    r = requests.get(TOKEN_INFO_URL, params={'access_token': handler.oauth_data['access_token']})
-    return r.json()
-
-
-def _create_handler(path: str):
+def create_handler(path: str):
     try:
         return LocalOAuthHandler(path)
     except:
@@ -52,7 +27,7 @@ class OAuthHandler(object):
         ACC_TOKEN = 'access_token'
         REFR_TOKEN = 'refresh_token'
         EXP_TIME = 'exp_time'  # manually added
-        REDIRECT_URI = 'redirect_uri' # only for local
+        REDIRECT_URI = 'redirect_uri'  # only for local
 
     def __init__(self, path):
         self.path = path
@@ -134,6 +109,19 @@ class OAuthHandler(object):
         """Check for OAuth file existence and one-time initialize if necessary. Throws on error."""
         raise NotImplementedError
 
+    def get_access_token_info(self) -> dict:
+        """json keywords
+        int exp: expiration time in sec
+        str aud: client id
+        user_id, app_id, iat (exp time)
+        """
+        r = requests.get(TOKEN_INFO_URL,
+                         params={'access_token': self.oauth_data['access_token']})
+        return r.json()
+
+    def get_auth_header(self) -> dict:
+        return {'Authorization': self.get_auth_token()}
+
 
 class AppspotOAuthHandler(OAuthHandler):
     APPSPOT_URL = 'https://tensile-runway-92512.appspot.com/'
@@ -189,7 +177,10 @@ class AppspotOAuthHandler(OAuthHandler):
 
 
 class LocalOAuthHandler(OAuthHandler):
-    """https://developer.amazon.com/public/apis/experience/cloud-drive/content/getting-started"""
+    """A local OAuth handler that works with a whitelisted security profile.
+    The profile must not be created prior to June 2015. Profiles created prior to this month
+    are not able to use the new scope "clouddrive:read_all" that replaces "clouddrive:read".
+    https://developer.amazon.com/public/apis/experience/cloud-drive/content/getting-started"""
 
     CLIENT_DATA_FILE = 'client_data'
 
@@ -241,14 +232,11 @@ class LocalOAuthHandler(OAuthHandler):
     def check_oauth_file_exists(self):
         """:raises Exception"""
         if not os.path.isfile(self.oauth_data_path):
-            r = requests.post(self.AMAZON_OA_LOGIN_URL, params=self.OAUTH_ST1())
-            if r.status_code != requests.status_codes.codes.ok:
-                logging.critical('Error')
-                raise Exception
+            from urllib.parse import urlencode
 
-            webbrowser.open_new_tab(r.url)
-            print('A window will have opened at %s' % self.AMAZON_OA_LOGIN_URL)
-
+            url = self.AMAZON_OA_LOGIN_URL + '?' + urlencode(self.OAUTH_ST1())
+            webbrowser.open_new_tab(url)
+            print('A window will have opened at %s' % url)
             ret_url = input('Please log in or accept '
                             'and enter the URL you have been redirected to: ')
             ret_q = parse_qs(urlparse(ret_url).query)
