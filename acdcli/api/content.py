@@ -4,6 +4,8 @@ import http.client as http
 import os
 import json
 import io
+import tempfile
+import subprocess
 import mimetypes
 from collections import OrderedDict
 import logging
@@ -136,7 +138,21 @@ class ContentMixin(object):
     def upload_file(self, file_name: str, parent: str = None,
                     read_callbacks=None, deduplication=False) -> dict:
         params = {'suppress': 'deduplication'}
-        if deduplication and os.path.getsize(file_name) > 0:
+        
+        # encrypt the file
+        # tempdir = tempfile.gettempdir()
+        tempdir = '/mnt/wdcloud/tmp'
+        dir = tempdir + '/acdcli'
+        if not os.path.exists(dir):
+          os.mkdir(dir)
+        tempfile = dir + next(tempfile._get_candidate_names()) + ".gpg"
+
+        s = subprocess.check_output(['gpg', '--encrypt', '-r', '82708C80', 
+          '--output', tempfile, file_name],
+          stderr=subprocess.STDOUT)
+        
+        # use the encrypted file instead
+        if deduplication and os.path.getsize(tempfile) > 0:
             params = {}
 
         basename = os.path.basename(file_name)
@@ -144,7 +160,7 @@ class ContentMixin(object):
         if parent:
             metadata['parents'] = [parent]
         mime_type = _get_mimetype(basename)
-        f = _tee_open(file_name, callbacks=read_callbacks)
+        f = _tee_open(tempfile, callbacks=read_callbacks)
 
         # basename is ignored
         m = MultipartEncoder(fields=OrderedDict([('metadata', json.dumps(metadata)),
@@ -156,6 +172,8 @@ class ContentMixin(object):
         r = self.BOReq.post(self.content_url + 'nodes', params=params, data=m,
                             acc_codes=ok_codes, stream=True,
                             headers={'Content-Type': m.content_type})
+                            
+        os.remove(tempfile)
 
         if r.status_code not in ok_codes:
             raise RequestError(r.status_code, r.text)
